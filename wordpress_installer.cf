@@ -209,7 +209,3 @@ bundle edit_line replace_default_wordpress_config_with_ours
 #
 # - instead of hardcoding "/var/www/html", derive httpd document root on the fly from /etc/httpd/conf/httpd.conf
 #   DocumentRoot using Function readstringlist
-#
-# - use "ifrepaired" function to add httpd restart after packages are installed (php and php-mysql especially) so
-#   that the httpd loads the new packages.  this handles the scenario where httpd is running, but without php
-#   and php-mysql; it should be restarted after these packages are loaded.
