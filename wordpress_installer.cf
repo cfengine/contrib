@@ -26,6 +26,7 @@ bundlesequence => {
 			"configuration_of_mysql_db_for_wordpress", 
 			"wpconfig_exists",
 			"wpconfig_is_properly_configured",
+			"allow_http_inbound",
 		  };
 
 
@@ -47,15 +48,15 @@ vars: "desired_package" slist => {
 packages: "$(desired_package)"
              package_policy => "add",
              package_method => yum,
-             classes => if_repaired("packages_installed");
+             classes => if_repaired("packages_added");
 
 commands: 
 
-  packages_installed::
+  packages_added::
 
     "/sbin/service httpd graceful" 
 
-             comment => "restarting httpd because packages_installed class was set; this should help us pick up new httpd modules if they were installed.";
+             comment => "Restarting httpd so it can pick up new modules.";
 
 }
 
@@ -88,14 +89,15 @@ classes:
 
 reports:
         wordpress_tarball_is_present::
-		"wordpress tarball is on disk";
+		"WordPress tarball is on disk.";
 
 
 commands:
 
 	!wordpress_tarball_is_present::
 
-		"/usr/bin/wget -q -O /root/wordpress-latest.tar.gz http://wordpress.org/latest.tar.gz";
+		"/usr/bin/wget -q -O /root/wordpress-latest.tar.gz http://wordpress.org/latest.tar.gz"
+			comment => "Downloading latest version of WordPress.";
 
 }
 
@@ -113,14 +115,16 @@ classes:
 
 reports:
         wordpress_directory_is_present::
-		"wordpress tarball is on disk";
+		"WordPress directory is present.";
 
 
 commands:
 
 	!wordpress_directory_is_present::
 
-		"/bin/tar -C /var/www/html -xvzf /root/wordpress-latest.tar.gz";
+		"/bin/tar -C /var/www/html -xvzf /root/wordpress-latest.tar.gz"
+
+			comment => "Unrolling wordpress tarball to /var/www/html/.";
 
 }
 
@@ -134,7 +138,9 @@ bundle agent configuration_of_mysql_db_for_wordpress
 commands:
         "/usr/bin/mysql -u root -e \"
                                         CREATE DATABASE wordpress;
-                                        GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@localhost IDENTIFIED BY 'lopsa10mt';
+                                        GRANT ALL PRIVILEGES ON wordpress.*
+                                            TO 'wordpress'@localhost
+                                            IDENTIFIED BY 'lopsa10linux';
                                         FLUSH PRIVILEGES;
                                    \"
         ";
@@ -149,22 +155,24 @@ bundle agent wpconfig_exists
 {
 
 classes:
-	"wordpress_config_file_exists" expression => fileexists("/var/www/html/wordpress/wp-config.php");
+	"wordpress_config_file_exists" expression =>
+		fileexists("/var/www/html/wordpress/wp-config.php");
             
 
 
 reports:
         wordpress_config_file_exists::
-		"wordpress config file /var/www/html/wordpress/wp-config.php is present";
+		"WordPress config file /var/www/html/wordpress/wp-config.php is present";
 
         !wordpress_config_file_exists::
-		"wordpress config file /var/www/html/wordpress/wp-config.php is not present";
+		"WordPress config file /var/www/html/wordpress/wp-config.php is not present";
 
 commands:
 
 	!wordpress_config_file_exists::
 
-		"/bin/cp -p /var/www/html/wordpress/wp-config-sample.php /var/www/html/wordpress/wp-config.php";
+		"/bin/cp -p /var/www/html/wordpress/wp-config-sample.php \
+                     /var/www/html/wordpress/wp-config.php";
 
 }
 
@@ -187,7 +195,7 @@ bundle edit_line replace_default_wordpress_config_with_ours
     "username_here" replace_with => value("wordpress");
 
   replace_patterns:
-    "password_here" replace_with => value("lopsa10mt");
+    "password_here" replace_with => value("lopsa10linux");
 }
 
 
@@ -196,10 +204,47 @@ bundle edit_line replace_default_wordpress_config_with_ours
 
 
 
+bundle agent allow_http_inbound
+{
+files:
+  redhat:: # tested on RHEL only, file location may vary based on Linux distro or OS
+      "/etc/sysconfig/iptables"
+       edit_line => insert_HTTP_allow_rule_before_the_accept_established_tcp_conns_rule,
+       comment => "insert HTTP allow rule into /etc/sysconfig/iptables",
+       classes => if_repaired("iptables_edited");
+
+commands: 
+	iptables_edited::
+		"/sbin/service iptables restart"
+			comment => "Restarting iptables to load new config";
+
+}
+
+
+    bundle edit_line insert_HTTP_allow_rule_before_the_accept_established_tcp_conns_rule
+    {
+      vars:
+          "http_rule" string => "-A INPUT -p tcp -m tcp --dport 80 -j ACCEPT";
+  
+  
+      insert_lines: "$(http_rule)",
+          location => before_the_accept_established_tcp_conns_rule;
+    }
+
+        body location before_the_accept_established_tcp_conns_rule
+
+        {
+        before_after => "before";
+        first_last => "first";
+        select_line_matching => "^-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT.*";
+        }
+
+
+
+
 
 # Todo:
 #
-# - complain if there is no line "^-A INPUT -p tcp -m tcp --dport 80 -j ACCEPT" in /etc/sysconfig/iptables
 #
 # MySQL:
 # - submit a patch to the MySQL folks to add a non-interactive version of /usr/bin/mysql_secure_installation
@@ -207,5 +252,6 @@ bundle edit_line replace_default_wordpress_config_with_ours
 # - change the root password using /usr/bin/mysqladmin -u root password 'new-password'
 # - secure mysql instance by: removing the test databases and anonymous user created by default
 #
+# httpd:
 # - instead of hardcoding "/var/www/html", derive httpd document root on the fly from /etc/httpd/conf/httpd.conf
 #   DocumentRoot using Function readstringlist
