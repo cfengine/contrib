@@ -15,8 +15,6 @@ bundle agent php_pecl_http_extension_is_installed_and_configured {
 
 files:
 
-  app::
-
       "/etc/php.ini"
 
        edit_line => tell_php_to_load_http_extension;
@@ -24,7 +22,7 @@ files:
 
 
 classes:
-  app::
+
   "pecl_http_module_exists" expression => fileexists("/usr/lib64/php/modules/http.so");
 
 
