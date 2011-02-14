@@ -18,7 +18,7 @@ inputs          => {
 }
 
 
-bundle agent php_pecl_http_extension_is_installed_and_configured {
+bundle agent php_pecl_http_extension_is_installed_and_integrated {
 
 files:
 
