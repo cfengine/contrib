@@ -1,6 +1,9 @@
 # Install pecl_http PHP module to provide HttpRequest class to our PHP Web app:
 #   - run "pecl install pecl_http" and set SELinux type on http.so to textrel_shlib_t
 #   - edit /etc/php.ini to tell php to dynamically load http.so
+#
+# Author: Aleksey Tsalolikhin.
+# Date: 14 Feb 2011.
 
 body common control
 
