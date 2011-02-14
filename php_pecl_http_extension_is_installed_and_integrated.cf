@@ -2,6 +2,10 @@
 #   - run "pecl install pecl_http" and set SELinux type on http.so to textrel_shlib_t
 #   - edit /etc/php.ini to tell php to dynamically load http.so
 #
+# TODO: instead of using select_line_matching, use begin and end select region
+# to insert the extension=http.so line into /etc/php.ini at the end of instead
+# of in the middle of the Dynamic Extensions block so it looks cleaner.
+#
 # Author: Aleksey Tsalolikhin.
 # Date: 14 Feb 2011.
 
