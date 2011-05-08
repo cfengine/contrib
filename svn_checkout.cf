@@ -1,0 +1,73 @@
+# Copyright 2011 Nick Anderson <nick@cmdln.org>. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are
+# permitted provided that the following conditions are met:
+#
+#   1. Redistributions of source code must retain the above copyright notice, this list of
+#      conditions and the following disclaimer.
+#
+#   2. Redistributions in binary form must reproduce the above copyright notice, this list
+#      of conditions and the following disclaimer in the documentation and/or other materials
+#      provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY NICK ANDERSON ``AS IS'' AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NICK ANDERSON OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# The views and conclusions contained in the software and documentation are those of the
+# authors and should not be interpreted as representing official policies, either expressed
+# or implied, of Nick Anderson.
+
+bundle agent svn_checkout_noauth(svn_url, revision, checkout_path) {
+# Maintain CLEAN checkout of specified revision from specified SVN repository path noauth
+# Example usage: 
+# methods:
+#   policyhub::
+#     "any" usebundle => svn_checkout_noauth("http://myrepo/cfengine/inputs/trunk, "HEAD", "/var/cfengine/inputs"),
+#           comment   => "Ensure policy checkout is clean";
+
+ classes:
+   "checkout_directory_exists" expression => fileexists($(checkout_path));
+
+ files:
+   !checkout_present.checkout_directory_exists::
+     "$(checkout_path)"
+       delete  => tidy,
+       comment => "The file or directory $(checkout_path) not a valid working copy";
+
+ commands:
+   any::
+     "/usr/bin/svn info $(checkout_path)/ | grep --silent '^URL: $(svn_url)' && echo +checkout_present || echo -checkout_absent"
+       contain => in_shell,
+       module  => "true",
+       comment => "Ensure working copy is a checkout of the right repository path";
+
+   # If valid svn co, ensure no unversioned files, no altered files, and in sync with specified revision
+   checkout_present::
+     "/usr/bin/svn status --no-ignore $(checkout_path) | grep ^? | cut -c 8- | xargs -I '{}' rm -rfv '{}' || exit 1"
+       contain => in_shell,
+       comment => "Ensure svn working copy $(checkout_path) has no unversioned files";
+
+     "/usr/bin/svn revert --recursive $(checkout_path)"
+       comment => "Ensure svn working copy $(checkout_path) has no altered files";
+
+     "/usr/bin/svn up $(checkout_path) --revision $(revision)"
+       comment => "Ensure svn working copy $(checkout_path) is up to date with revision $(revision)";
+
+   # If not a valid working copy, or nothing exists at the specified location perform a checkout
+   !checkout_present||!checkout_directory_exists::
+     "/usr/bin/svn co --revision $(revision) $(svn_url) $(checkout_path)"
+       comment => "Checkout $(svn_url) revision $(revision) to $(checkout_path)";
+
+ reports:
+   !checkout_presnt||!checkout_directory_exists::
+     "Perform new checkout of $(checkout_path) from $(svn_url) revision $(revision)";
+
+}
+
