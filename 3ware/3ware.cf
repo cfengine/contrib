@@ -1,0 +1,62 @@
+#######################################################
+# Check the status of 3ware arrays
+#######################################################
+# $Id: 3ware.cf 1286 2011-04-14 17:54:27Z beckerjes $
+
+bundle agent 3ware {
+vars:
+    'TW_packages' slist => {
+        'tw_cli',
+    };
+
+    'tw_report_file' string => '${g.admshare}/3ware_report.txt';
+    
+    (TW_raid_okay|TW_raid_fault).has_report_file::
+        'tw_report' string => readfile("${tw_report_file}","64k"),
+                    policy => 'free';
+
+classes:
+
+    'has_report_file'      expression => isplain("${tw_report_file}");
+    'have_run_module'              or => { 'TW_raid_okay', 'TW_raid_fault' };
+    'have_report_variable' expression => isvariable('tw_report');
+    'ready_to_report'             and => {  "have_run_module", 
+                                            "have_report_variable",
+                                            "hardware_3ware",
+                                             }; 
+
+
+packages:
+
+    hardware_3ware::
+        "${TW_packages}"
+            package_policy        => "add",
+            package_method        => yum,
+            package_architectures => { "x86_64"};
+
+
+commands:
+
+    hardware_3ware::
+        # This module should (de)assert the following classes:
+        # Class:    TW_raid_okay      -- Indicates no errors found.
+        # Class:    TW_raid_fault     -- Indicates an error was found.
+        #
+        # The module should take a path to output the report file as 
+        # the only argument. Module script is copied as part of failsafe.cf
+        
+        "${sys.workdir}/modules/check_3ware.sh ${tw_report_file}"
+             module => 'true',
+             action => if_elapsed('60'),
+             handle => 'check_3ware_array',
+            contain => quiet_no_shell_umask22;
+
+reports:
+    
+    ready_to_report.TW_raid_okay.(inform_mode|verbose_mode)::
+        "All 3ware RAID arrays appear nominal.";
+        
+    ready_to_report.TW_raid_fault::
+        "ERROR!  3Ware array faulted!${const.n}${tw_report}";
+
+}
