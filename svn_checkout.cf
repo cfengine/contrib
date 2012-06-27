@@ -66,7 +66,7 @@ bundle agent svn_checkout_noauth(svn_url, revision, checkout_path) {
        comment => "Checkout $(svn_url) revision $(revision) to $(checkout_path)";
 
  reports:
-   !checkout_presnt||!checkout_directory_exists::
+   !checkout_present||!checkout_directory_exists::
      "Perform new checkout of $(checkout_path) from $(svn_url) revision $(revision)";
 
 }
