@@ -1,0 +1,115 @@
+#!/bin/bash
+
+export PATH="/usr/bin:/usr/sbin:/bin:/sbin"
+umask 077
+
+progname="$(basename $0)"
+
+mflag="false"
+qflag="false"
+compile="false"
+src=""
+
+_usage()
+{
+    cat <<EOF
+usage: $progname [-hmq] [ -f /policy/file ]
+
+Query or build/install selinux policy packages
+ -h : Shows this help
+ -m : Module mode; used when running from CFEngine (implies -q)
+ -q : Quiet mode
+ -f : Takes a policy file as an argument.
+      If given, this enables policy-build mode.
+      If absent, the queries and returns all installed SELinux modules
+
+EOF
+
+    exit $1
+}
+
+_query()
+{
+    local tmp="$(mktemp /tmp/secompile.XXXXXXXX)"
+    trap "rm $tmp" EXIT
+
+    if ! semodule -l >"$tmp"; then
+        $mflag && echo "+secompile_query_fail"
+        $qflag || echo "ERROR: semodule -l failed" 1>&2
+        return 1
+    fi
+
+    if $mflag; then
+        echo -n "%semodules=[$(awk '{print "\""$1"\"";}' < $tmp | tr '\n' ,)"
+        echo "]"
+        echo "+secompile_query_success"
+    else
+        awk '{print $1;}' < $tmp
+        $qflag || echo "+ Successfully listed SELinux modules"
+    fi
+
+    rm $tmp
+    trap - EXIT
+    return 0
+}
+
+_compile()
+{
+    if [[ ! -f "$src" || ! -r "$src" ]]; then
+        $mflag && echo "+secompile_compile_fail"
+        $qflag || echo "ERROR: source file $src does not exist or isn't readable" 1>&2
+        return 1
+    fi
+
+    local base="$(basename $src | sed -re 's/\.te$//')"
+    local mod="/tmp/${base}.mod"
+    local pp="/tmp/${base}.pp"
+
+    if ! checkmodule -M -m -o "$mod" "$src" >/dev/null; then
+        $mflag && echo "+secompile_compile_fail"
+        $qflag || echo "ERROR: checkmodule failed" 1>&2
+        return 1
+    fi
+
+    if ! semodule_package -o "$pp" -m "$mod" >/dev/null; then
+        $mflag && echo "+secompile_compile_fail"
+        $qflag || echo "ERROR: semodule_package failed" 1>&2
+        return 1
+    fi
+
+    if ! semodule -i "$pp" >/dev/null; then
+        $mflag && echo "+secompile_compile_fail"
+        $qflag || echo "ERROR: semodule -i failed" 1>&2
+        return 1
+    fi
+
+    $mflag && echo "+secompile_compile_success"
+    $qflag || echo "+ Successfully compiled SELinux policy $src"
+
+    return 0
+}
+
+while getopts "f:hmq" _opt; do
+    case "$_opt" in
+        "h")
+            _usage 0
+        ;;
+        "m")
+            mflag="true"
+            qflag="true"
+        ;;
+        "q")
+            qflag="true"
+        ;;
+        "f")
+            src="$OPTARG"
+            compile="true"
+        ;;
+        "*")
+            _usage 1
+        ;;
+    esac
+done
+
+$compile || { _query; exit; }
+$compile && { _compile; exit; }
