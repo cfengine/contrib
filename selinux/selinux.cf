@@ -1,0 +1,43 @@
+##########################################################################
+# vim:syntax=cf3:tabstop=2:shiftwidth=2:softtabstop=2:smarttab:expandtab
+#
+# Library file for tuning selinux policies
+#
+
+body file control
+{
+  inputs => {
+              "$(sys.libdir)/stdlib.cf",
+            };
+  namespace => "selinux";
+}
+
+bundle agent boolean(bool, state)
+{
+  vars:
+    redhat::
+      "getsebool"      string => "/usr/sbin/getsebool";
+      "setsebool"      string => "/usr/sbin/setsebool";
+      "selinuxenabled" string => "/usr/sbin/selinuxenabled";
+
+      "selinux_enabled" string => and(returnszero("$(selinuxenabled)", "noshell"));
+
+      "selinux_$(bool)"
+        string     => execresult("$(getsebool) $(bool)", "useshell"),
+        ifvarclass => "$(selinux_enabled)";
+
+  classes:
+    redhat::
+      "$(bool)_set" expression => regcmp("$(bool) .* $(state)$", "$(selinux_$(bool))");
+
+  commands:
+    redhat::
+      "$(setsebool) -P $(bool) $(state)"
+        ifvarclass => and("$(selinux_enabled)", not("$(bool)_set")),
+        classes    => default:if_ok("$(bool)_set");
+
+  reports:
+    inform_mode::
+      "Set selinux boolean $(bool) => $(state)"
+        ifvarclass => "$(bool)_set";
+}
