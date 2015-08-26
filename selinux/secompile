@@ -21,7 +21,8 @@ Query or build/install selinux policy packages
  -q : Quiet mode
  -f : Takes a policy file as an argument.
       If given, this enables policy-build mode.
-      If absent, the queries and returns all installed SELinux modules
+      If absent, queries and returns all installed SELinux modules (as a data
+      list, if -m is used)
 
 EOF
 
