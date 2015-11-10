@@ -1,14 +1,14 @@
 #!/bin/bash
 
-export PATH="/usr/bin:/usr/sbin:/bin:/sbin"
+typeset -x PATH="/usr/bin:/usr/sbin:/bin:/sbin"
 umask 077
 
-progname="$(basename $0)"
+typeset progname="$(basename $0)"
 
-mflag="false"
-qflag="false"
-compile="false"
-src=""
+typeset mflag="false"
+typeset qflag="false"
+typeset compile="false"
+typeset src=""
 
 _usage()
 {
