@@ -24,50 +24,107 @@
 # authors and should not be interpreted as representing official policies, either expressed
 # or implied, of Nick Anderson.
 
-bundle agent svn_checkout_noauth(svn_url, revision, checkout_path) {
+bundle agent maintain_svn_checkout_noauth(svn_url, revision, checkout_path) {
 # Maintain CLEAN checkout of specified revision from specified SVN repository path noauth
+# Requires cfengine stdlib copbl
 # Example usage: 
 # methods:
 #   policyhub::
-#     "any" usebundle => svn_checkout_noauth("http://myrepo/cfengine/inputs/trunk, "HEAD", "/var/cfengine/inputs"),
-#           comment   => "Ensure policy checkout is clean";
+#     "any" usebundle => maintain_svn_checkout_noauth("http://myrepo/cfengine/inputs/trunk, "HEAD", "/var/cfengine/inputs"),
+#           comment   => "Ensure policy checkout is clean at at the proper revision";
 
- classes:
-   "checkout_directory_exists" expression => fileexists($(checkout_path));
+    classes:
+        "checkout_directory_exists" expression            => fileexists($(checkout_path));
+        "svn_checkout_references_correct_repo" expression => returnszero("/usr/bin/svn info $(checkout_path)/ | grep '^URL: $(svn_url)' > /dev/null","useshell");
+        "svn_checkout_exists" expression                  => returnszero("/usr/bin/svn info $(checkout_path) > /dev/null","useshell");
+        "unversioned_files_present" expression            => returnszero("/usr/bin/svn status --no-ignore $(checkout_path) | grep ^? > /dev/null","useshell");
+        "modified_files_present" expression               => returnszero("/usr/bin/svn status --no-ignore $(checkout_path) | grep ^M > /dev/null","useshell");
+        "svn_repo_needs_update" expression                => returnszero("/usr/bin/svn status --show-updates $(checkout_path) | grep '*' > /dev/null", "useshell");
 
- files:
-   !checkout_present.checkout_directory_exists::
-     "$(checkout_path)"
-       delete  => tidy,
-       comment => "The file or directory $(checkout_path) not a valid working copy";
 
- commands:
-   any::
-     "/usr/bin/svn info $(checkout_path)/ | grep --silent '^URL: $(svn_url)' && echo +checkout_present || echo -checkout_absent"
-       contain => in_shell,
-       module  => "true",
-       comment => "Ensure working copy is a checkout of the right repository path";
+    files:
+        # if checkout directory exists but isnt a valid checkout
+        checkout_directory_exists.!svn_checkout_exists::
+            "$(checkout_path)"
+                handle       => "purge $(checkout_path)",
+                comment      => "The file or directory $(checkout_path) not a valid working copy. Deleting all conflicting files.",
 
-   # If valid svn co, ensure no unversioned files, no altered files, and in sync with specified revision
-   checkout_present::
-     "/usr/bin/svn status --no-ignore $(checkout_path) | grep ^? | cut -c 8- | xargs -I '{}' rm -rfv '{}' || exit 1"
-       contain => in_shell,
-       comment => "Ensure svn working copy $(checkout_path) has no unversioned files";
+                delete       => tidy,
+                file_select  => by_name(".*"),
+                depth_search => recurse("inf");
 
-     "/usr/bin/svn revert --recursive $(checkout_path)"
-       comment => "Ensure svn working copy $(checkout_path) has no altered files";
+    commands:
 
-     "/usr/bin/svn up $(checkout_path) --revision $(revision)"
-       comment => "Ensure svn working copy $(checkout_path) is up to date with revision $(revision)";
+        # If there is a checkout present, but it is of the wrong repository then switch to the right one
+        !svn_checkout_references_correct_repo.svn_checkout_exists::
+            "/usr/bin/svn switch --non-interactive $(svn_url)"
+                handle  => "svn_switch",
+                comment => "Current checkout not pointing to the correct repository, switch to the correct repository",
 
-   # If not a valid working copy, or nothing exists at the specified location perform a checkout
-   !checkout_present||!checkout_directory_exists::
-     "/usr/bin/svn co --revision $(revision) $(svn_url) $(checkout_path)"
-       comment => "Checkout $(svn_url) revision $(revision) to $(checkout_path)";
+                classes => if_ok("svn_checkout_references_correct_repo"),
+                contain => in_shell;
 
- reports:
-   !checkout_presnt||!checkout_directory_exists::
-     "Perform new checkout of $(checkout_path) from $(svn_url) revision $(revision)";
 
+        # If valid svn co, ensure no unversioned files
+        unversioned_files_present::
+            "/usr/bin/svn status --no-ignore $(checkout_path) | grep ^? | cut -c 8- | xargs -I '{}' rm -rfv '{}' || exit 1"
+                handle  => "svn_clean",
+                comment => "Remove unversioned files",
+
+                classes => define_cancel_if_ok("removed_unversioned_files","unversioned_files_present"),
+                contain => in_shell;
+
+        # if modified files present then revert them
+        modified_files_present::
+            "/usr/bin/svn revert --recursive $(checkout_path)"
+                handle  => "svn_revert",
+                comment => "Ensure svn working copy $(checkout_path) has no modified files",
+
+                classes => define_cancel_if_ok("reverted_modified_files","modified_files_present");
+
+        # if svn checkout references the correct repository ensure we are up to date
+        svn_repo_needs_update.svn_checkout_references_correct_repo::
+            "/usr/bin/svn update $(checkout_path) --revision $(revision)"
+                handle  => "svn_update",
+                comment => "Ensure svn working copy $(checkout_path) is up to date with revision $(revision)",
+
+                classes => if_ok("svn_checkout_updated");
+
+        # If not a valid working copy, or nothing exists at the specified location perform a checkout
+        !svn_checkout_exists||!checkout_directory_exists.!svn_checkout_references_correct_repo::
+            "/usr/bin/svn checkout --revision $(revision) $(svn_url) $(checkout_path)"
+                handle  => "svn_checkout",
+                comment => "Checkout $(svn_url) revision $(revision) to $(checkout_path)",
+
+                classes => if_ok("svn_checkout_exists, checkout_directory_exists");
+
+    reports:
+
+        checkout_directory_exists.!svn_checkout_exists::
+            "SVN: Perform new checkout of $(checkout_path) from $(svn_url) revision $(revision)";
+
+        svn_checkout_updated::
+            "SVN: Updated svn working copy $(checkout_path) to $(revision) from repo $(svn_url)";
+
+        reverted_modified_files::
+            "SVN: Reverted modified files in $(checkout_path)";
+
+        removed_unversioned_files::
+            "SVN: Removed unversioned files in $(checkout_path)";
+
+}
+
+body classes cancel_if_ok(x)
+{
+    cancel_repaired => { "$(x)" };
+    cancel_kept => { "$(x)" };
+}
+
+body classes define_cancel_if_ok(define, cancel)
+{
+    cancel_repaired =>  { "$(cancel)" };
+    cancel_kept =>  { "$(cancel)" };
+    promise_repaired => { "$(define)" };
+    promise_kept => { "$(define)" };
 }
 
