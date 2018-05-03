@@ -1,0 +1,108 @@
+##########################################################################
+# vim:syntax=cf3:tabstop=2:shiftwidth=2:softtabstop=2:smarttab:expandtab
+#
+# Library file for tuning selinux policies
+#
+
+body file control
+{
+  inputs => {
+              "$(sys.libdir)/stdlib.cf",
+            };
+  namespace => "selinux";
+}
+
+bundle agent status(mode)
+{
+  vars:
+    any::
+      "modes" slist => {
+                        "enforcing",
+                        "permissive",
+                        "disabled",
+                       };
+
+    redhat::
+      "getenforce"     string => "/usr/sbin/getenforce";
+      "setenforce"     string => "/usr/sbin/setenforce";
+      "selinuxenabled" string => "/usr/sbin/selinuxenabled";
+
+      "selinux_config"
+        string => "/etc/selinux/config";
+
+      "selinux_enmode"
+        string => execresult("$(getenforce)", "noshell");
+
+      "v[SELINUX]"    # Values to set in the form v[LHS]=RHS
+        string => "$(mode)";
+
+  classes:
+    any::
+      "to_enforcing"      expression => strcmp("$(mode)", "enforcing");
+      "selinux_enforcing" expression => strcmp("$(selinux_enmode)", "Enforcing");
+      "selinux_enabled"   expression => returnszero("$(selinuxenabled)", "noshell");
+      "mode_valid"        expression => some("$(mode)", "modes");
+
+  files:
+    redhat::
+      "$(selinux_config)"
+        handle     => "selinux_status_files_config",
+        comment    => "Set SELinux mode in the config file",
+        edit_line  => default:set_line_based("$(this.namespace):$(this.bundle).v", "=", "\s*=\s*", ".*", "\s*#\s*"),
+        perms      => default:system_owned("0644"),
+        classes    => default:scoped_classes_generic("bundle", "selinux_config"),
+        ifvarclass => and(isvariable("selinux_config"), "mode_valid");
+
+  commands:
+    redhat::
+      "$(setenforce) 0"
+        comment    => "Disable SELinux",
+        classes    => default:if_repaired("disabled_enforcement"),
+        ifvarclass => and("selinux_enforcing", "selinux_enabled", not("to_enforcing"));
+
+      "$(setenforce) 1"
+        comment    => "Enable SELinux",
+        classes    => default:if_repaired("enabled_enforcement"),
+        ifvarclass => and(not("selinux_enforcing"), "selinux_enabled", "to_enforcing");
+
+  reports:
+    inform_mode::
+      "SELinux configuration file mode = $(mode)"
+        ifvarclass => "selinux_config_ok";
+
+      "SELinux set to permissive mode"
+        ifvarclass => "disabled_enforcement";
+
+      "SELinux set to enforcing mode"
+        ifvarclass => "enabled_enforcement";
+}
+
+bundle agent boolean(bool, state)
+{
+  vars:
+    redhat::
+      "getsebool"      string => "/usr/sbin/getsebool";
+      "setsebool"      string => "/usr/sbin/setsebool";
+      "selinuxenabled" string => "/usr/sbin/selinuxenabled";
+
+      "selinux_enabled" string => and(returnszero("$(selinuxenabled)", "noshell"));
+
+      "selinux_$(bool)"
+        string     => execresult("$(getsebool) $(bool)", "useshell"),
+        ifvarclass => "$(selinux_enabled)";
+
+  classes:
+    redhat::
+      "$(bool)_set" expression => regcmp("$(bool) .* $(state)$", "$(selinux_$(bool))");
+
+  commands:
+    redhat::
+      "$(setsebool) -P $(bool) $(state)"
+        ifvarclass => and("$(selinux_enabled)", not("$(bool)_set")),
+        classes    => default:if_ok("$(bool)_set");
+
+  reports:
+    inform_mode::
+      "Set selinux boolean $(bool) => $(state)"
+        ifvarclass => "$(bool)_set";
+}
