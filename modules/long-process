@@ -1,0 +1,319 @@
+#!/usr/bin/env python2
+#
+# Bryan Burke
+# bburke@eecs.utk.edu
+#
+# Module for CFEngine3 to start, monitor, and cleanup a long-running process
+#
+# Copyright (c) 2014, Bryan A. Burke
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+#
+
+import os
+import random
+import signal
+import sys
+import time
+
+### Global vars ###
+
+global _sigvar
+
+
+### Data Definitions ###
+
+class _my_signal:
+    def __init__(this):
+        this.signal = None
+
+    def get(this):
+        return this.signal
+
+    def set(this, s):
+        if this.signal is None:
+            this.signal = s
+        return
+
+    def clear(this):
+        this.signal = None
+        return
+
+
+### Signal Handler ###
+
+def _dummysig(_sig, _stack):
+    _sigvar.set(_sig)
+    return
+
+
+### Functions ###
+
+# Create the child which we're to monitor
+def create_process(conf):
+    child = os.fork()
+
+    if child != 0:
+        return child
+
+    envp = {}
+    path = conf['command'][0]
+    args = conf['command']
+
+    # Sleep a few seconds to give the parent time to call pause()
+    time.sleep(5)
+
+    os.nice(20)
+    os.execve(path, args, envp)
+    raise SystemExit(1)
+
+# Close all file descriptors
+def closeall(minimum=3):
+    MAXFD = 1024 # Could detect this; not expecting it's needed
+
+    for i in range(minimum, MAXFD):
+        try:
+            os.close(i)
+        except OSError:
+            pass
+    return
+
+# Open a file descriptor as /dev/null
+def nullify(fd):
+    _fd = os.open(os.devnull, os.O_RDWR)
+    if _fd != fd:
+        os.dup2(_fd, fd)
+        os.close(_fd)
+    return
+
+def random_sleep(conf):
+    sleep_minutes = random.randint(1, conf['expire'])
+    time.sleep(sleep_minutes * 60)
+    return
+
+def pid_file_exists(conf):
+    return os.access(conf['pid_file'], os.F_OK)
+
+def process_exists(conf):
+    if not os.access(conf['pid_file'], os.F_OK):
+        return False
+
+    pid = None
+    with open(conf['pid_file'], 'r') as f:
+        pid = int(f.readline().strip())
+
+    if pid is None:
+        return False
+
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+
+    return True
+
+def create_state(conf):
+    with open(conf['pid_file'], 'w') as f:
+        f.write('%d' % os.getpid())
+    return
+
+def cleanup(conf):
+    if os.access(conf['pid_file'], os.F_OK):
+        os.unlink(conf['pid_file'])
+    return
+
+def usage(argv):
+    _usagestr = \
+'''Usage: %s [-h|--help] expire job_name /path/to/command [ arg1 .. ]
+
+-h | --help : Show this help
+
+expire      : The maximum time in minutes to allow the job to run. This will
+              also be used to do a random splay after the job is completed in
+              the range of 1..$expire minutes
+
+job_name    : A unique name for the job to run; this can be used to issue
+              multiple long-process jobs (but only one of each)
+
+This command used execve, so you must specify a full path
+
+''' % argv[0]
+
+    sys.stderr.write(_usagestr)
+    return
+
+def parse_args(argv):
+    if len(argv) > 1 and argv[1] == '-h':
+        usage(argv)
+        raise SystemExit(0)
+
+    if len(argv) < 4:
+        usage(argv)
+        raise SystemExit(1)
+
+    conf = {}
+    conf['expire'] = int(argv[1])
+    conf['pid_file'] = '/var/run/%s.pid' % argv[2]
+    conf['command'] = argv[3:]
+
+    conf['exit_running'] = '%s_running' % argv[2]
+    conf['exit_started'] = '%s_started' % argv[2]
+    conf['exit_failed'] = '%s_failed' % argv[2]
+
+    return conf
+
+if __name__ == '__main__':
+    _sigvar = _my_signal()
+    conf = parse_args(sys.argv)
+
+    # Check for an already-running process
+    if pid_file_exists(conf):
+        if process_exists(conf):
+            print "+%s" % conf['exit_running']
+            raise SystemExit(0)
+
+        # Else, clean up and start over
+        cleanup(conf)
+
+    child = os.fork()
+    if child != 0:
+
+        # Wait for child to exit or signal that we're ok
+        signal.signal(signal.SIGUSR1, _dummysig)
+        signal.signal(signal.SIGCHLD, _dummysig)
+        signal.signal(signal.SIGTERM, _dummysig)
+        signal.signal(signal.SIGINT, _dummysig)
+        signal.pause()
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        _sig = _sigvar.get()
+        _sigvar.clear()
+        if _sig == signal.SIGCHLD:
+            _pid, _status = os.wait()
+
+            if _pid != child:
+                sys.stderr.write('ERROR: Different child PID than expected\n')
+                print '+%s' % conf['exit_failed']
+                raise SystemExit(1)
+
+            if os.WEXITSTATUS(_status) == 0:
+                print '+%s' % conf['exit_started']
+            else:
+                print '+%s' % conf['exit_failed']
+
+            raise SystemExit(os.WEXITSTATUS(_status))
+
+        elif _sig == signal.SIGUSR1:
+            # Child is fine
+            print '+%s' % conf['exit_started']
+            raise SystemExit(0)
+
+        else:
+            # We received some other signal; this is wrong
+            sys.stderr.write('ERROR: Received unexpected signal %d; Exiting\n' % _sig)
+            os.kill(child, signal.SIGTERM)
+            print '+%s' % conf['exit_failed']
+            raise SystemExit(1)
+        #NOTREACHED
+
+    # Now we're in the potential daemon process
+    create_state(conf)
+    os.setsid()
+    closeall()
+    nullify(0)
+    nullify(1)
+    nullify(2)
+
+    child = create_process(conf)
+    os.kill(os.getppid(), signal.SIGUSR1)
+
+    # We should be ok now. Set up signals and wait for alarm or child exit
+    signal.signal(signal.SIGTERM, _dummysig)
+    signal.signal(signal.SIGUSR1, _dummysig)
+    signal.signal(signal.SIGUSR2, _dummysig)
+    signal.signal(signal.SIGINT, _dummysig)
+    signal.signal(signal.SIGQUIT, _dummysig)
+    signal.signal(signal.SIGHUP, _dummysig)
+    signal.signal(signal.SIGCHLD, _dummysig)
+    signal.signal(signal.SIGALRM, _dummysig)
+
+    signal.setitimer(signal.ITIMER_REAL, conf['expire'] * 60, 0)
+
+    signal.pause()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+    signal.signal(signal.SIGUSR2, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    signal.signal(signal.SIGALRM, signal.SIG_IGN)
+
+    _sig = _sigvar.get()
+    _sigvar.clear()
+
+    if _sig == signal.SIGCHLD:
+        _pid, _status = os.wait()
+        if _pid != child:
+            sys.stderr.write('ERROR: Unknown child process exited\n')
+            os.kill(pid, signal.SIGTERM)
+            cleanup(conf)
+            raise SystemExit(1)
+
+        if os.WEXITSTATUS(_status) != 0:
+            # We're done; no random sleep
+            sys.stderr.write('ERROR: Child exited with nonzero status: %d\n' % os.WEXITSTATUS(_status))
+            cleanup(conf)
+            raise SystemExit(1)
+        #BREAK
+
+    elif _sig == signal.SIGALRM:
+        sys.stderr.write('INFO: Terminating process\n')
+        signal.setitimer(signal.ITIMER_REAL, 0, 0)
+        os.kill(child, signal.SIGTERM)
+
+        try:
+            time.sleep(5)
+            os.kill(child, 0)
+            sys.stderr.write('WARNING: Did not respond to SIGTERM\n')
+            os.kill(child, signal.SIGKILL)
+            sys.stderr.write('INFO: Sent SIGKILL\n')
+        except OSError:
+            pass
+
+    else:
+        # Sort of the same as an error, but it's not
+        sys.stderr.write('WARNING: Received a different termination signal\n')
+        os.kill(pid, signal.SIGTERM)
+        cleanup(conf)
+        raise SystemExit(0)
+
+    random_sleep(conf)
+    cleanup(conf)
+    raise SystemExit(0)
+
+# vim:foldmethod=indent:foldcolumn=4
